@@ -40,7 +40,9 @@ def tv_loss_2d(x):
     dw = (x[...,:,1:] - x[...,:,:-1]).abs().mean()
     return dh + dw
 
-
+def _tofloat(x):
+    import torch
+    return x.item() if isinstance(x, torch.Tensor) else float(x)
 
 opt = tyro.cli(AllConfigs)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -70,44 +72,31 @@ class DepthEstimator:
     """
     def __init__(self, device):
         self.device = device
-        self.model, self.transform = None, None
-        try:
-            # 方案A：MiDaS DPT-Large（如果环境可用）
-            self.model = torch.hub.load("intel-isl/MiDaS", "DPT_Large").to(device).eval()
-            midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
-            self.transform = midas_transforms.dpt_transform
-            print("[INFO] Depth model: MiDaS DPT-Large.")
-        except Exception as e:
-            print("[WARN] MiDaS not available:", e)
-            # 方案B：占位符（请用你的模型替换下面两行）
-            self.model = None
-            self.transform = None
-            print("[WARN] DepthEstimator is a stub. Please plug in your ZoeDepth/DPT!")
+        self.model = torch.hub.load("intel-isl/MiDaS", "DPT_Large").to(device).eval()
+        for p in self.model.parameters():
+            p.requires_grad_(False)  # 不训练模型
 
     @torch.no_grad()
     def predict_nograd(self, img_chw01: torch.Tensor) -> torch.Tensor:
-        """仅用于生成 d0(干净参考)，不反传。"""
-        if self.model is None:
-            # 占位：返回亮度的假深度，便于打通管线（请尽快替换）
-            fake = img_chw01.mean(dim=0, keepdim=True)  # (1,H,W)
-            return (fake + 1e-6)
-        img = img_chw01
-        if self.transform is not None:
-            # 变换期望 HWC&RGB，故转下
-            img_hwc = img.permute(1,2,0).cpu().numpy()
-            net_in = self.transform(img_hwc).to(self.device)
-            pred = self.model(net_in)  # (1,H,W)
-            return pred.clamp_min(1e-6)
-        else:
-            return (img.mean(dim=0, keepdim=True) + 1e-6)
+        # 纯 Torch 预处理（不破坏尺寸）：把网络输出再双线性回到原尺寸
+        C,H,W = img_chw01.shape
+        net_in = F.interpolate(img_chw01.unsqueeze(0), size=(384,384), mode="bilinear", align_corners=False)
+        # 简单归一化（MiDaS/DPT 更复杂，但这版能先跑通；后续再替换成官方 transform 的 Torch 版本）
+        net_in = (net_in - 0.5) / 0.5
+        pred_384 = self.model(net_in)              # (1,1,384,384) 或 (1,384,384)
+        if pred_384.dim()==3: pred_384 = pred_384.unsqueeze(1)
+        pred = F.interpolate(pred_384, size=(H,W), mode="bilinear", align_corners=False).squeeze(0)  # (1,H,W)
+        return pred.clamp_min(1e-6)
 
     def predict(self, img_chw01: torch.Tensor) -> torch.Tensor:
-        """可反传（不对模型反传，只对输入和上游参数反传）。"""
-        # 不对 self.model 反传：用 no_grad 得到网络输出，再当作常数参与损失会断梯度；
-        # 为了对上游可微（渲染→像素→损失），这里采用“停止对网络求导”的做法：
-        with torch.no_grad():
-            d = self.predict_nograd(img_chw01)  # (1,H,W), detached
-        return d  # 上游的梯度仍可通过损失 w.r.t img_chw01 回传到3DGS
+        # 允许对 img_chw01 求导（别用 no_grad）
+        C,H,W = img_chw01.shape
+        net_in = F.interpolate(img_chw01.unsqueeze(0), size=(384,384), mode="bilinear", align_corners=False)
+        net_in = (net_in - 0.5) / 0.5
+        pred_384 = self.model(net_in)
+        if pred_384.dim()==3: pred_384 = pred_384.unsqueeze(1)
+        pred = F.interpolate(pred_384, size=(H,W), mode="bilinear", align_corners=False).squeeze(0)
+        return pred.clamp_min(1e-6)
 
 
 class AdversarialAttack:
@@ -133,7 +122,7 @@ class AdversarialAttack:
         self.depth_model = DepthEstimator(device)
 
         # hyper-params (可从 opt 里覆写)
-        self.bias_dir = getattr(opt, "bias_dir", +1)         # s in {+1,-1}, +1推远, -1拉近
+        self.bias_dir = getattr(opt, "bias_dir", 1)         # s in {+1,-1}, +1推远, -1拉近
         self.beta     = getattr(opt, "beta", 0.10)           # log域偏置步长
         self.lambda_det   = getattr(opt, "lambda_det", 1.0)
         self.lambda_dep   = getattr(opt, "lambda_dep", 1.0)
@@ -200,26 +189,27 @@ class AdversarialAttack:
         # return torch.tensor(0.0, device=self.device, requires_grad=True)
 
     def save_image(self, image, alpha, output_path):
-        # 去掉 Batch 和 View 维度
-        image_tensor = image.squeeze(0).squeeze(0)  # 从 (1, 1, 3, 512, 512) 到 (3, 512, 512)
-        alpha_tensor = alpha.squeeze(0).squeeze(0)  # 从 (1, 1, 1, 512, 512) 到 (1, 512, 512)
+        image_tensor = image.squeeze(0).squeeze(0)               # (3,H,W)
+        alpha_tensor = alpha.squeeze()                           # 可能是 (H,W) 或 (1,H,W)
 
-        # 转换为 (H, W, C) 格式
-        image_array = image_tensor.permute(1, 2, 0).detach().cpu().numpy()  # (3, 512, 512) -> (512, 512, 3)
-        alpha_array = alpha_tensor.permute(1, 2, 0).detach().cpu().numpy()  # (1, 512, 512) -> (512, 512, 1)
+        # 转 (H,W,C)
+        image_array = image_tensor.permute(1, 2, 0).detach().cpu().numpy()  # (H,W,3)
 
-        # 将 [0, 1] 的浮点数值转换为 [0, 255] 的 uint8 类型
-        image_array = (image_array * 255).clip(0, 255).astype(np.uint8)
-        alpha_array = (alpha_array * 255).clip(0, 255).astype(np.uint8)
+        alpha_np = alpha_tensor.detach().cpu().numpy()
+        if alpha_np.ndim == 2:
+            alpha_array = alpha_np[..., None]                    # (H,W,1)
+        elif alpha_np.ndim == 3:
+            alpha_array = np.transpose(alpha_np, (1,2,0))        # (1,H,W)->(H,W,1) 或 (H,W,1)保持
+        else:
+            raise ValueError(f"Unexpected alpha ndim={alpha_np.ndim}")
 
-        # 拼接 RGB 和 Alpha 通道
-        rgba_array = np.concatenate((image_array, alpha_array), axis=-1)
+        image_array = (image_array * 255).clip(0,255).astype(np.uint8)
+        alpha_array = (alpha_array * 255).clip(0,255).astype(np.uint8)
 
-        # 使用 PIL 保存为 RGBA 格式图像
+        rgba_array = np.concatenate((image_array, alpha_array), axis=-1)     # (H,W,4)
         rgba_image = Image.fromarray(rgba_array, 'RGBA')
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)  # 创建文件夹
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         rgba_image.save(output_path)
-        # print(f"RGBA image saved to {output_path}")
 
     # ==== NEW: build ROI mask from detector outputs ====
     def build_roi_from_outputs(self, outputs, H, W, score_th=0.2, shrink=0.15):
@@ -269,6 +259,7 @@ class AdversarialAttack:
         delta_sig_mean = delta_sig[:, roi_mask].mean().detach()
 
         return L_bias, delta_sig_mean
+
 
     # ==== NEW: printability loss ====
     def printability_loss(self, img_adv_chw01: torch.Tensor, img_clean_chw01: torch.Tensor,
@@ -363,7 +354,7 @@ class AdversarialAttack:
             is_target = torch.isin(outputs[0]['labels'], torch.tensor(target_classes, device=self.device))
             if torch.any(is_target):
                 conf = outputs[0]['scores'][is_target].max()
-                det_loss = -torch.log(torch.clamp(conf, min=1e-6))
+                det_loss = -torch.log(torch.clamp(1.0 - conf, min=1e-6))
                 total_conf += conf.item()
             else:
                 det_loss = torch.tensor(10.0, device=self.device, requires_grad=True)
@@ -406,96 +397,34 @@ class AdversarialAttack:
                      + self.lambda_shape * shape_loss
                      + self.lambda_print * avg_print_loss )
 
+        # delta_sig_tgt = self.bias_dir * self.beta
+        # beta0 = self.bias_dir * delta_sig_mean
+        # beta_err = abs(beta0 - self.beta)
         # 日志
         mean_delta_sig = (sum(delta_sig_list)/len(delta_sig_list)) if len(delta_sig_list)>0 else 0.0
-        print(f"Step: {step} | Det: {avg_det_loss.item():.4f} | Bias: {avg_bias_loss.item():.4f} | Print: {avg_print_loss.item():.4f} | Shape: {shape_loss.item():.4f} | Conf: {avg_conf.item():.4f} | Δsig: {mean_delta_sig:+.4f}")
+        print(
+            f"Step: {step} | "
+            f"Det: {_tofloat(avg_det_loss):.4f} | "
+            f"Bias: {_tofloat(avg_bias_loss):.4f} | "
+            f"Print: {_tofloat(avg_print_loss):.4f} | "
+            f"Shape: {_tofloat(shape_loss):.4f} | "
+            f"Conf: {_tofloat(avg_conf):.4f} | "
+            f"Δsig: {mean_delta_sig:+.4f} | "
+            )
 
         with open(f"./{self.opt.workspace}/attack_log.txt", "a") as f:
-            f.write(f"{step}, {shape_loss.item():.6f}, {avg_det_loss.item():.6f}, {avg_conf.item():.6f}, {avg_bias_loss.item():.6f}, {avg_print_loss.item():.6f}, {mean_delta_sig:.6f}\n")
+            f.write(        
+                f"Step: {step} | "
+                f"Det: {_tofloat(avg_det_loss):.4f} | "
+                f"Bias: {_tofloat(avg_bias_loss):.4f} | "
+                f"Print: {_tofloat(avg_print_loss):.4f} | "
+                f"Shape: {_tofloat(shape_loss):.4f} | "
+                f"Conf: {_tofloat(avg_conf):.4f} | "
+                f"Δsig: {mean_delta_sig:+.4f}\n"
+                )
 
         return total_loss
 
-
-    # def perform_attack(self, gaussians, generated_gaussians, step):
-    #     # 2. 生成12个视角
-    #     azimuth = np.arange(0, 360, 30, dtype=np.int32)
-    #     input_elevation = -10
-
-    #     total_adv_loss = 0
-    #     total_conf = 0
-    #     num_views = len(azimuth)
-
-    #     for azi_idx, azi in enumerate(azimuth):
-    #         # 生成相机位置信息
-    #         cam_poses = torch.from_numpy(orbit_camera(input_elevation, azi, radius=self.opt.cam_radius, opengl=True)).unsqueeze(0).to(self.device)
-    #         cam_poses[:, :3, 1:3] *= -1
-
-    #         cam_view = torch.inverse(cam_poses).transpose(1, 2) # [V, 4, 4]
-    #         cam_view_proj = cam_view @ proj_matrix # [V, 4, 4]
-    #         cam_pos = - cam_poses[:, :3, 3] # [V, 3]
-
-    #         if generated_gaussians.dim() == 2:
-    #             generated_gaussians = generated_gaussians.unsqueeze(0)
-    #         generated_gaussians.retain_grad()
-
-    #         image_raw = self.gs.render(generated_gaussians, cam_view.unsqueeze(0), cam_view_proj.unsqueeze(0), cam_pos.unsqueeze(0), scale_modifier=1)
-
-    #         image = image_raw['image']
-    #         alpha = image_raw['alpha']
-
-    #         # 保存当前渲染的图像
-    #         if step+1 % 10 == 0:
-    #             save_path = f"./{self.opt.workspace}/render_outputs/step_{step}_azi_{azi_idx}.png"
-    #             self.save_image(image, alpha, save_path)
-
-    #         # 3. 物理增强
-    #         # if step % 2 == 0:
-    #         image = image.squeeze(0).squeeze(0).permute(1, 2, 0)
-    #         augmentor = PhysicalAugmentation()
-    #         image = augmentor.augment(image).permute(2, 0, 1).unsqueeze(0).unsqueeze(0)
-
-    #         # 4. 计算损失
-    #         adv_loss, conf = self.compute_adversarial_loss(image[0])
-    #         conf = conf.item() if isinstance(conf, torch.Tensor) else conf
-
-    #         if adv_loss.item() != 10.0:
-    #             total_adv_loss += adv_loss
-    #             total_conf += conf
-    #         else:
-    #             num_views -= 1
-
-    #     # print(num_views)
-    #     avg_adv_loss = (total_adv_loss / num_views) if num_views > 0 else torch.tensor(10.0, device=self.device, requires_grad=True)
-    #     avg_conf = (total_conf / num_views) if num_views > 0 else torch.tensor(0.0, device=self.device, requires_grad=True)
-
-    #     shape_loss = self.compute_shape_loss(generated_gaussians[0], gaussians)
-
-    #     # shape_loss = shape_loss * 0.0
-
-    #     adv_scale_factor = 10.0  
-    #     min_adv_weight = 0.2
-    #     min_shape_weight = 0.4
-    #     scaled_adv_loss = avg_adv_loss / adv_scale_factor 
-    #     raw_adv_weight = 1.0 / (scaled_adv_loss.detach() + 1e-6) # 计算动态权重（直接使用损失值）
-         
-    #     raw_shape_weight = shape_loss.detach()
-    #     total_raw_weight = raw_adv_weight + raw_shape_weight + 1e-6
-    #     adv_weight = raw_adv_weight / total_raw_weight
-    #     shape_weight = raw_shape_weight / total_raw_weight
-
-    #     # shape_weight = 0.0
-    #     # adv_weight = torch.clamp(adv_weight, min=min_adv_weight)
-    #     # shape_weight = 1.0 - adv_weight
-    #     shape_weight = torch.clamp(shape_weight, min=min_shape_weight)
-    #     adv_weight = 1.0 - shape_weight
-    #     total_loss = -adv_weight * avg_adv_loss + shape_weight * shape_loss
-
-    #     print(f"Step: {step}, Shape Loss: {shape_loss.item()}, Adversarial Loss: {avg_adv_loss.item()}, Confidence: {avg_conf}")
-        
-    #     with open(f"./{self.opt.workspace}/attack_log.txt", "a") as f:
-    #         f.write(f"{step}, {shape_loss.item()}, {avg_adv_loss.item()}, {avg_conf}\n")
-
-    #     return total_loss
 
 
 def process(opt: Options, path):

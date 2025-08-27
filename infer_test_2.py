@@ -144,8 +144,8 @@ def post_process_gaussians_auto_threshold(gaussians, percentile=80, scale_factor
     shs = shs[noise_mask]
 
     # 2. y 轴放大处理
-    means3D[:, 2] *= scale_factor  
-    scales[:, 2] *= scale_factor  
+    means3D[:, 0] *= scale_factor  
+    scales[:, 0] *= scale_factor  
 
     # 合并处理后的数据
     processed_gaussians = np.concatenate([
@@ -167,6 +167,7 @@ bg_remover = rembg.new_session()
 # process function
 def process(opt: Options, path):
     name = os.path.splitext(os.path.basename(path))[0]
+    global proj_matrix
     print(f'[INFO] Processing {path} --> {name}')
     os.makedirs(opt.workspace, exist_ok=True)
 
