@@ -1,0 +1,20 @@
+\begin{table}
+    \centering
+    \caption{The comparison result of adversarial attacks in the physical scenario. AP@0.5(\%) of the car.}
+    \label{tab:physical comparison}
+    % \begin{tabular}{lcccc}
+    \begin{tabularx}{\columnwidth}{@{}lXXXX@{}}
+         \toprule
+         Method & YOLOv5 & SSD & F-RCNN & M-RCNN \\
+         \midrule
+         Vanilla & 93.75 & 84.17 & 96.25 & 94.58 \\ 
+         Random & 80.00 & 76.25 & 87.50 & 82.50 \\
+         CAMOU & 69.58 & 64.58 & 72.08 & 74.17 \\
+         DAS & 75.83 & 74.17 & 79.58 & 77.50 \\
+         FCA & 60.83 & 48.33 & 62.92 & 67.92 \\
+         3DGAA & 32.08 & 17.92 & 35.83 & 34.58 \\
+         \bottomrule
+    % \end{tabular}
+    \end{tabularx}
+
+\end{table}

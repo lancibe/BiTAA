@@ -1,0 +1,7 @@
+core/output/*
+workspace/*
+core/__pycache__/*
+mvdream/__pycache__/*
+__pycache__/*
+diff-gaussian-rasterization/**.pt
+*.safetensors
