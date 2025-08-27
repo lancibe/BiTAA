@@ -5,3 +5,7 @@ mvdream/__pycache__/*
 __pycache__/*
 diff-gaussian-rasterization/**.pt
 *.safetensors
+*.pt
+*.ckpt
+*.bin
+#*.safetensors --- IGNORE ---
