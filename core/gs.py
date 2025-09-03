@@ -45,6 +45,7 @@ class GaussianRenderer:
         # loop of loop...
         images = []
         alphas = []
+        depths = []
         for b in range(B):
 
             # pos, opacity, scale, rotation, shs
@@ -95,14 +96,21 @@ class GaussianRenderer:
 
                 images.append(rendered_image)
                 alphas.append(rendered_alpha)
+                
+                # >>> NEW: collect depth
+                if rendered_depth.dim() == 3 and rendered_depth.shape[0] == 1:
+                    rendered_depth = rendered_depth[0]      # (1,H,W) -> (H,W)
+                depths.append(rendered_depth)
 
         images = torch.stack(images, dim=0).view(B, V, 3, self.opt.output_size, self.opt.output_size)
         alphas = torch.stack(alphas, dim=0).view(B, V, 1, self.opt.output_size, self.opt.output_size)
+        depths = torch.stack(depths, dim=0).view(B, V, 1, self.opt.output_size, self.opt.output_size)
 
         # print("Images requires_grad:", images.requires_grad)
         return {
             "image": images, # [B, V, 3, H, W]
             "alpha": alphas, # [B, V, 1, H, W]
+            "depth": depths, # <<< NEW: [B, V, 1, H, W]
         }
 
 

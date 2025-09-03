@@ -10,24 +10,28 @@ check_conda_env() {
     fi
 }
 
-# Function to find a GPU with volatile utilization of 0
+# Function to find a GPU with volatile utilization of 0 and memory usage below 10%
 find_available_gpu() {
     echo "[INFO] Checking available GPUs..."
     total_gpus=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
     gpu_id=-1
     for i in $(seq 0 $((total_gpus - 1))); do
         utilization=$(nvidia-smi -i $i --query-gpu=utilization.gpu --format=csv,noheader,nounits)
-        if [[ $utilization -eq 0 ]]; then
+        memory_usage=$(nvidia-smi -i $i --query-gpu=memory.used --format=csv,noheader,nounits)
+        memory_total=$(nvidia-smi -i $i --query-gpu=memory.total --format=csv,noheader,nounits)
+        memory_percentage=$((memory_usage * 100 / memory_total))
+        
+        if [[ $utilization -eq 0 && $memory_percentage -lt 10 ]]; then
             gpu_id=$i
             break
         fi
     done
     
     if [[ $gpu_id -ge 0 ]]; then
-        echo "[INFO] Selected GPU: $gpu_id (utilization: $utilization%)"
+        echo "[INFO] Selected GPU: $gpu_id (utilization: $utilization%, memory usage: $memory_percentage%)"
         export CUDA_VISIBLE_DEVICES=$gpu_id
     else
-        echo -e "\e[31m[ERROR] No available GPU with utilization 0 found. Exiting.\e[0m"
+        echo -e "\e[31m[ERROR] No available GPU with utilization 0 and memory usage below 10% found. Exiting.\e[0m"
         exit 1
     fi
 }

@@ -410,6 +410,7 @@ class AdversarialAttack:
             f"Shape: {_tofloat(shape_loss):.4f} | "
             f"Conf: {_tofloat(avg_conf):.4f} | "
             f"Δsig: {mean_delta_sig:+.4f} | "
+            # f"d_gt: {avg_dgt:.3f} | d_pred: {avg_dpred:.3f} | AbsRel: {avg_absrel:.3f} | RMSE: {avg_rmse:.3f}"
             )
 
         with open(f"./{self.opt.workspace}/attack_log.txt", "a") as f:
@@ -420,7 +421,8 @@ class AdversarialAttack:
                 f"Print: {_tofloat(avg_print_loss):.4f} | "
                 f"Shape: {_tofloat(shape_loss):.4f} | "
                 f"Conf: {_tofloat(avg_conf):.4f} | "
-                f"Δsig: {mean_delta_sig:+.4f}\n"
+                f"Δsig: {mean_delta_sig:+.4f} | \n"
+                # f"d_gt: {avg_dgt:.3f} | d_pred: {avg_dpred:.3f} | AbsRel: {avg_absrel:.3f} | RMSE: {avg_rmse:.3f}\n"
                 )
 
         return total_loss
@@ -448,7 +450,7 @@ def process(opt: Options, path):
     # mask = torch.ones_like(generated_gaussians).to(device)
 
     # 训练循环
-    for i in range(50):
+    for i in range(50): # 训练轮次
         optimizer.zero_grad()  # 每步迭代清除梯度
 
         # 执行攻击并返回损失

@@ -1,5 +1,6 @@
 core/output/*
 workspace/*
+exps/*
 core/__pycache__/*
 mvdream/__pycache__/*
 __pycache__/*
@@ -8,4 +9,5 @@ diff-gaussian-rasterization/**.pt
 *.pt
 *.ckpt
 *.bin
+*.csv
 #*.safetensors --- IGNORE ---
