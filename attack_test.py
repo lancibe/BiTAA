@@ -21,6 +21,7 @@ from kiui.cam import orbit_camera
 from core.unet import UNet
 from core.gs import GaussianRenderer
 from core.options import AllConfigs, Options
+from depth import DepthEstimator
 
 from physical import PhysicalAugmentation
 
@@ -64,39 +65,39 @@ proj_matrix[2, 2] = (opt.zfar + opt.znear) / (opt.zfar - opt.znear)
 proj_matrix[3, 2] = - (opt.zfar * opt.znear) / (opt.zfar - opt.znear)
 proj_matrix[2, 3] = 1
 
-# ==== NEW: Monocular depth wrapper ====
-class DepthEstimator:
-    """
-    统一接口：.predict(image_chw_in_0_1) -> depth_chw(H,W) in meters or pseudo-meters
-    你可以替换内部实现为 ZoeDepth / DPT-Large。
-    """
-    def __init__(self, device):
-        self.device = device
-        self.model = torch.hub.load("intel-isl/MiDaS", "DPT_Large").to(device).eval()
-        for p in self.model.parameters():
-            p.requires_grad_(False)  # 不训练模型
+# # ==== NEW: Monocular depth wrapper ====
+# class DepthEstimator:
+#     """
+#     统一接口：.predict(image_chw_in_0_1) -> depth_chw(H,W) in meters or pseudo-meters
+#     你可以替换内部实现为 ZoeDepth / DPT-Large。
+#     """
+#     def __init__(self, device):
+#         self.device = device
+#         self.model = torch.hub.load("intel-isl/MiDaS", "DPT_Large").to(device).eval()
+#         for p in self.model.parameters():
+#             p.requires_grad_(False)  # 不训练模型
 
-    @torch.no_grad()
-    def predict_nograd(self, img_chw01: torch.Tensor) -> torch.Tensor:
-        # 纯 Torch 预处理（不破坏尺寸）：把网络输出再双线性回到原尺寸
-        C,H,W = img_chw01.shape
-        net_in = F.interpolate(img_chw01.unsqueeze(0), size=(384,384), mode="bilinear", align_corners=False)
-        # 简单归一化（MiDaS/DPT 更复杂，但这版能先跑通；后续再替换成官方 transform 的 Torch 版本）
-        net_in = (net_in - 0.5) / 0.5
-        pred_384 = self.model(net_in)              # (1,1,384,384) 或 (1,384,384)
-        if pred_384.dim()==3: pred_384 = pred_384.unsqueeze(1)
-        pred = F.interpolate(pred_384, size=(H,W), mode="bilinear", align_corners=False).squeeze(0)  # (1,H,W)
-        return pred.clamp_min(1e-6)
+#     @torch.no_grad()
+#     def predict_nograd(self, img_chw01: torch.Tensor) -> torch.Tensor:
+#         # 纯 Torch 预处理（不破坏尺寸）：把网络输出再双线性回到原尺寸
+#         C,H,W = img_chw01.shape
+#         net_in = F.interpolate(img_chw01.unsqueeze(0), size=(384,384), mode="bilinear", align_corners=False)
+#         # 简单归一化（MiDaS/DPT 更复杂，但这版能先跑通；后续再替换成官方 transform 的 Torch 版本）
+#         net_in = (net_in - 0.5) / 0.5
+#         pred_384 = self.model(net_in)              # (1,1,384,384) 或 (1,384,384)
+#         if pred_384.dim()==3: pred_384 = pred_384.unsqueeze(1)
+#         pred = F.interpolate(pred_384, size=(H,W), mode="bilinear", align_corners=False).squeeze(0)  # (1,H,W)
+#         return pred.clamp_min(1e-6)
 
-    def predict(self, img_chw01: torch.Tensor) -> torch.Tensor:
-        # 允许对 img_chw01 求导（别用 no_grad）
-        C,H,W = img_chw01.shape
-        net_in = F.interpolate(img_chw01.unsqueeze(0), size=(384,384), mode="bilinear", align_corners=False)
-        net_in = (net_in - 0.5) / 0.5
-        pred_384 = self.model(net_in)
-        if pred_384.dim()==3: pred_384 = pred_384.unsqueeze(1)
-        pred = F.interpolate(pred_384, size=(H,W), mode="bilinear", align_corners=False).squeeze(0)
-        return pred.clamp_min(1e-6)
+#     def predict(self, img_chw01: torch.Tensor) -> torch.Tensor:
+#         # 允许对 img_chw01 求导（别用 no_grad）
+#         C,H,W = img_chw01.shape
+#         net_in = F.interpolate(img_chw01.unsqueeze(0), size=(384,384), mode="bilinear", align_corners=False)
+#         net_in = (net_in - 0.5) / 0.5
+#         pred_384 = self.model(net_in)
+#         if pred_384.dim()==3: pred_384 = pred_384.unsqueeze(1)
+#         pred = F.interpolate(pred_384, size=(H,W), mode="bilinear", align_corners=False).squeeze(0)
+#         return pred.clamp_min(1e-6)
 
 
 class AdversarialAttack:
