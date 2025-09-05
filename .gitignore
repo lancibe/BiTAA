@@ -4,6 +4,8 @@ exps/*
 core/__pycache__/*
 mvdream/__pycache__/*
 __pycache__/*
+monodepth2/*
+models/*
 diff-gaussian-rasterization/**.pt
 *.safetensors
 *.pt

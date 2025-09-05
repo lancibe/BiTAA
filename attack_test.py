@@ -119,8 +119,23 @@ class AdversarialAttack:
         self.detector.eval()  # 设置为评估模式, YOLOv3不需要设置为评估模式
         self.gs = GaussianRenderer(opt)
 
-        # ==== NEW: depth model & caches ====
-        self.depth_model = DepthEstimator(device)
+        # # ==== NEW: depth model & caches ====
+        # self.depth_model = DepthEstimator(device, backend="dpt")
+
+        # DepthAnything：优先用 base/small + 384×384 + AMP
+        self.depth_model = DepthEstimator(
+            device, backend="depthanything",
+            depthanything_ckpt="LiheYoung/depth-anything-base-hf",  # 或 small
+            net_size=(384,384), amp=True
+        )
+
+        # # Monodepth2：若见 hubconf 缺失，force_reload=True 或清缓存
+        # self.depth_model = DepthEstimator(
+        #     device=device,
+        #     backend="monodepth2",
+        #     mono_repo_path="./monodepth2",
+        #     mono_weights_dir="./models/monodepth2",
+        # )
 
         # hyper-params (可从 opt 里覆写)
         self.bias_dir = getattr(opt, "bias_dir", 1)         # s in {+1,-1}, +1推远, -1拉近
